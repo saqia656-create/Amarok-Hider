@@ -1,0 +1,196 @@
+diff --git a/.cursor/rules/overview.mdc b/.cursor/rules/overview.mdc
+index 7577f7a..596a7d9 100644
+--- a/.cursor/rules/overview.mdc
++++ b/.cursor/rules/overview.mdc
+@@ -69,6 +69,8 @@ The `Hider` class serves as the central management system for both file and app
+ 
+ ### 5. XHide
+ 
++- Experimental self-hiding preference filters only the current application ID from list queries by `com.android.settings`; it does not disable the package or filter System UI/dialer queries.
++
+ **Directory:** `app/src/main/java/deltazero/amarok/xposed/`
+ 
+ Amarok is both an Android app and an Xposed module. The Xposed part is implemented in the `xposed` package.
+diff --git a/app/src/main/java/deltazero/amarok/PrefMgr.java b/app/src/main/java/deltazero/amarok/PrefMgr.java
+index 6bfeb3d..428b80a 100644
+--- a/app/src/main/java/deltazero/amarok/PrefMgr.java
++++ b/app/src/main/java/deltazero/amarok/PrefMgr.java
+@@ -67,6 +67,7 @@ public final class PrefMgr {
+     public static final String ENABLE_AUTO_HIDE = "enableAutoHide";
+     public static final String AUTO_HIDE_DELAY = "autoHideDelay";
+     public static final String BLOCK_SCREENSHOTS = "blockScreenshots";
++    public static final String HIDE_SELF_FROM_SETTINGS = "hideSelfFromSettings";
+     public static final String ENABLE_X_HIDE = "enableXHide";
+     public static final String DISABLE_ONLY_WITH_XHIDE = "disableOnlyWithXHide";
+     public static final String DISABLE_TOASTS = "disableToasts";
+diff --git a/app/src/main/java/deltazero/amarok/ui/settings/XHideCategory.java b/app/src/main/java/deltazero/amarok/ui/settings/XHideCategory.java
+index 1711473..21ecb0d 100644
+--- a/app/src/main/java/deltazero/amarok/ui/settings/XHideCategory.java
++++ b/app/src/main/java/deltazero/amarok/ui/settings/XHideCategory.java
+@@ -31,6 +31,15 @@ public class XHideCategory extends BaseCategory {
+         enableXHide.setEnabled(XHidePrefBridge.isAvailable);
+         addPreference(enableXHide);
+ 
++        var hideSelf = new MaterialSwitchPreference(activity);
++        hideSelf.setKey(PrefMgr.HIDE_SELF_FROM_SETTINGS);
++        hideSelf.setTitle(R.string.hide_self_from_settings);
++        hideSelf.setSummary(R.string.hide_self_from_settings_description);
++        hideSelf.setIcon(R.drawable.hide_source_black_24dp);
++        hideSelf.setChecked(PrefMgr.getPrefs().getBoolean(PrefMgr.HIDE_SELF_FROM_SETTINGS, false));
++        hideSelf.setEnabled(XHidePrefBridge.isAvailable && PrefMgr.isXHideEnabled());
++        addPreference(hideSelf);
++
+         var disableOnlyWithXHide = new MaterialSwitchPreference(activity);
+         disableOnlyWithXHide.setKey(PrefMgr.DISABLE_ONLY_WITH_XHIDE);
+         disableOnlyWithXHide.setTitle(R.string.disable_only_with_xhide);
+@@ -42,6 +51,7 @@ public class XHideCategory extends BaseCategory {
+ 
+         // Update the skip hide step preference when XHide is toggled
+         enableXHide.setOnPreferenceChangeListener((preference, newValue) -> {
++            hideSelf.setEnabled(XHidePrefBridge.isAvailable && (boolean) newValue);
+             disableOnlyWithXHide.setEnabled(XHidePrefBridge.isAvailable && (boolean) newValue);
+             return true;
+         });
+diff --git a/app/src/main/java/deltazero/amarok/utils/XHidePrefBridge.java b/app/src/main/java/deltazero/amarok/utils/XHidePrefBridge.java
+index e782f7c..5ff88da 100644
+--- a/app/src/main/java/deltazero/amarok/utils/XHidePrefBridge.java
++++ b/app/src/main/java/deltazero/amarok/utils/XHidePrefBridge.java
+@@ -85,7 +85,8 @@ public class XHidePrefBridge {
+         hidePkgNamesChangeListener = (sharedPreferences, key) -> {
+             // Avoid listening to HIDE_PKG_NAMES changes. SharedPrefs trends to write Set<String>
+             // in memory first, then write to disk asynchronously.
+-            if (Objects.equals(key, PrefMgr.ENABLE_X_HIDE)) {
++            if ((Objects.equals(key, PrefMgr.ENABLE_X_HIDE)
++                    || Objects.equals(key, PrefMgr.HIDE_SELF_FROM_SETTINGS))) {
+                 commitNewValues();
+             }
+         };
+@@ -100,6 +101,8 @@ public class XHidePrefBridge {
+     private static void commitNewValues() {
+         Log.d(TAG, "Committing new values to XPref");
+         xprefEditor.putStringSet(XPref.HIDE_PKG_NAMES, PrefMgr.getHideApps());
++        xprefEditor.putBoolean(XPref.HIDE_SELF_FROM_SETTINGS, PrefMgr.isXHideEnabled()
++                && PrefMgr.getPrefs().getBoolean(PrefMgr.HIDE_SELF_FROM_SETTINGS, false));
+         xprefEditor.putBoolean(XPref.IS_ACTIVE, Hider.getState() == Hider.State.HIDDEN && PrefMgr.isXHideEnabled());
+         xprefEditor.commit();
+     }
+diff --git a/app/src/main/java/deltazero/amarok/xposed/utils/FilterUtils.java b/app/src/main/java/deltazero/amarok/xposed/utils/FilterUtils.java
+index 15869ee..7bc1415 100644
+--- a/app/src/main/java/deltazero/amarok/xposed/utils/FilterUtils.java
++++ b/app/src/main/java/deltazero/amarok/xposed/utils/FilterUtils.java
+@@ -1,6 +1,10 @@
+ package deltazero.amarok.xposed.utils;
+ 
+ import android.annotation.SuppressLint;
++import android.content.Context;
++import android.app.ActivityManager;
++import android.os.Binder;
++import de.robv.android.xposed.XposedHelpers;
+ 
+ import com.github.kyuubiran.ezxhelper.Log;
+ import com.github.kyuubiran.ezxhelper.ObjectUtils;
+@@ -17,13 +21,16 @@ public class FilterUtils {
+     public static List<Object> filterAppsOrPkgs(List<Object> appsOrPkgs, Method m) {
+         if (!XPref.isXHideActive()) return appsOrPkgs;
+ 
++        boolean settingsCaller = isSettingsCaller();
+         AtomicInteger filteredCount = new AtomicInteger();
+         var filteredPackages = appsOrPkgs.stream()
+                 .filter(appOrPkg -> {
+                     boolean shouldHide;
+                     try {
+-                        shouldHide = XPref.shouldHide(ObjectUtils.getObjectOrNullUntilSuperclassAs(
+-                                appOrPkg, "packageName", null));
++                        String pkgName = ObjectUtils.getObjectOrNullUntilSuperclassAs(
++                                appOrPkg, "packageName", null);
++                        shouldHide = XPref.shouldHide(pkgName)
++                                || (settingsCaller && XPref.shouldHideSelf(pkgName));
+                     } catch (NoSuchFieldException e) {
+                         throw new RuntimeException(e);
+                     }
+@@ -38,6 +45,29 @@ public class FilterUtils {
+         return filteredPackages;
+     }
+ 
++    // Only filter self for Settings callers. Keep System UI / dialer package discovery intact.
++    private static boolean isSettingsCaller() {
++        int callerPid = Binder.getCallingPid();
++        try {
++            Class<?> activityThread = XposedHelpers.findClass("android.app.ActivityThread", null);
++            Object thread = XposedHelpers.callStaticMethod(activityThread, "currentActivityThread");
++            Context context = (Context) XposedHelpers.callMethod(thread, "getSystemContext");
++            ActivityManager manager = context.getSystemService(ActivityManager.class);
++            if (manager == null) return false;
++            var processes = manager.getRunningAppProcesses();
++            if (processes == null) return false;
++            for (var process : processes) {
++                if (process.pid == callerPid) {
++                    return "com.android.settings".equals(process.processName)
++                            || process.processName.startsWith("com.android.settings:");
++                }
++            }
++        } catch (Throwable ignored) {
++            // Caller identification failure must leave Amarok visible.
++        }
++        return false;
++    }
++
+     // NOTE: This method will not refresh XPref cache. Call refreshCache() before calling this method
+     public static Object filterAppsOrPkgsInSlices(Object /* ParceledListSlice<*> */ appsOrPkgs, Method m) {
+         List<Object> slice = ParceledListSliceUtil.sliceToList(appsOrPkgs);
+diff --git a/app/src/main/java/deltazero/amarok/xposed/utils/XPref.java b/app/src/main/java/deltazero/amarok/xposed/utils/XPref.java
+index 7bd3f41..523166f 100644
+--- a/app/src/main/java/deltazero/amarok/xposed/utils/XPref.java
++++ b/app/src/main/java/deltazero/amarok/xposed/utils/XPref.java
+@@ -13,6 +13,8 @@ public class XPref {
+ 
+     public static final String XPREF_PATH = "deltazero.amarok.xposed.prefs";
+     public static final String HIDE_PKG_NAMES = "hidePkgNames";
++    public static final String HIDE_SELF_FROM_SETTINGS = "hideSelfFromSettings";
++    private static boolean hideSelfCache = false;
+     public static final String IS_ACTIVE = "isActive";
+ 
+     private static boolean isActiveCache = false;
+@@ -36,17 +38,27 @@ public class XPref {
+ 
+     public static void refreshCache() {
+         xPref.reload();
+-        if (!xPref.getFile().canRead()) return;
++        if (!xPref.getFile().canRead()) {
++            isActiveCache = false;
++            hideSelfCache = false;
++            hidePkgNamesCache = Collections.emptySet();
++            return;
++        }
++        hideSelfCache = xPref.getBoolean(HIDE_SELF_FROM_SETTINGS, false);
+         isActiveCache = xPref.getBoolean(IS_ACTIVE, false);
+         hidePkgNamesCache = xPref.getStringSet(HIDE_PKG_NAMES, Collections.emptySet());
+     }
+ 
+     public static boolean isXHideActive() {
+-        return isActiveCache;
++        return isActiveCache || hideSelfCache;
+     }
+ 
+     public static boolean shouldHide(String pkgName) {
+-        return hidePkgNamesCache.contains(pkgName);
++        return isActiveCache && hidePkgNamesCache.contains(pkgName);
++    }
++
++    public static boolean shouldHideSelf(String pkgName) {
++        return hideSelfCache && BuildConfig.APPLICATION_ID.equals(pkgName);
+     }
+ 
+     public static String getXPrefDir() {
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index c98bff1..51ec9be 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,5 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
++    <string name="hide_self_from_settings">Hide Amarok from Settings (experimental)</string>
++    <string name="hide_self_from_settings_description">Filter this Amarok installation from app lists requested by Android Settings while XHide is enabled. Does not disable Amarok. Test your recovery tile first. Other system screens may still show the app.</string>
+     <string name="open_amarok">Open Amarok</string>
+     <string name="add_open_amarok_tile">Add recovery tile</string>
+     <string name="open_amarok_tile_instructions">Before hiding the icon, add Open Amarok to Quick Settings and test opening the app with it. To add it manually, edit your Quick Settings tiles. Dial codes may not work on every phone. This tile remains visible in Quick Settings.</string>
