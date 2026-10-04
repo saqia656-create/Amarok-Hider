@@ -65,7 +65,7 @@ android {
         }
         foss {
             dimension 'version'
-            applicationIdSuffix '.foss'
+            applicationIdSuffix '.foss.recovery'
         }
     }
 
