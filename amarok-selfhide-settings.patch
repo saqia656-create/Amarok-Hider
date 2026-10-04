@@ -24,7 +24,7 @@ index 6bfeb3d..428b80a 100644
      public static final String DISABLE_ONLY_WITH_XHIDE = "disableOnlyWithXHide";
      public static final String DISABLE_TOASTS = "disableToasts";
 diff --git a/app/src/main/java/deltazero/amarok/ui/settings/XHideCategory.java b/app/src/main/java/deltazero/amarok/ui/settings/XHideCategory.java
-index 1711473..21ecb0d 100644
+index 1711473..de5afc6 100644
 --- a/app/src/main/java/deltazero/amarok/ui/settings/XHideCategory.java
 +++ b/app/src/main/java/deltazero/amarok/ui/settings/XHideCategory.java
 @@ -31,6 +31,15 @@ public class XHideCategory extends BaseCategory {
@@ -37,22 +37,14 @@ index 1711473..21ecb0d 100644
 +        hideSelf.setSummary(R.string.hide_self_from_settings_description);
 +        hideSelf.setIcon(R.drawable.hide_source_black_24dp);
 +        hideSelf.setChecked(PrefMgr.getPrefs().getBoolean(PrefMgr.HIDE_SELF_FROM_SETTINGS, false));
-+        hideSelf.setEnabled(XHidePrefBridge.isAvailable && PrefMgr.isXHideEnabled());
++        hideSelf.setEnabled(XHidePrefBridge.isAvailable);
 +        addPreference(hideSelf);
 +
          var disableOnlyWithXHide = new MaterialSwitchPreference(activity);
          disableOnlyWithXHide.setKey(PrefMgr.DISABLE_ONLY_WITH_XHIDE);
          disableOnlyWithXHide.setTitle(R.string.disable_only_with_xhide);
-@@ -42,6 +51,7 @@ public class XHideCategory extends BaseCategory {
- 
-         // Update the skip hide step preference when XHide is toggled
-         enableXHide.setOnPreferenceChangeListener((preference, newValue) -> {
-+            hideSelf.setEnabled(XHidePrefBridge.isAvailable && (boolean) newValue);
-             disableOnlyWithXHide.setEnabled(XHidePrefBridge.isAvailable && (boolean) newValue);
-             return true;
-         });
 diff --git a/app/src/main/java/deltazero/amarok/utils/XHidePrefBridge.java b/app/src/main/java/deltazero/amarok/utils/XHidePrefBridge.java
-index e782f7c..5ff88da 100644
+index e782f7c..56ffe99 100644
 --- a/app/src/main/java/deltazero/amarok/utils/XHidePrefBridge.java
 +++ b/app/src/main/java/deltazero/amarok/utils/XHidePrefBridge.java
 @@ -85,7 +85,8 @@ public class XHidePrefBridge {
@@ -69,8 +61,8 @@ index e782f7c..5ff88da 100644
      private static void commitNewValues() {
          Log.d(TAG, "Committing new values to XPref");
          xprefEditor.putStringSet(XPref.HIDE_PKG_NAMES, PrefMgr.getHideApps());
-+        xprefEditor.putBoolean(XPref.HIDE_SELF_FROM_SETTINGS, PrefMgr.isXHideEnabled()
-+                && PrefMgr.getPrefs().getBoolean(PrefMgr.HIDE_SELF_FROM_SETTINGS, false));
++        xprefEditor.putBoolean(XPref.HIDE_SELF_FROM_SETTINGS,
++                PrefMgr.getPrefs().getBoolean(PrefMgr.HIDE_SELF_FROM_SETTINGS, false));
          xprefEditor.putBoolean(XPref.IS_ACTIVE, Hider.getState() == Hider.State.HIDDEN && PrefMgr.isXHideEnabled());
          xprefEditor.commit();
      }
@@ -183,14 +175,14 @@ index 7bd3f41..523166f 100644
  
      public static String getXPrefDir() {
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
-index c98bff1..51ec9be 100644
+index c98bff1..b9ede53 100644
 --- a/app/src/main/res/values/strings.xml
 +++ b/app/src/main/res/values/strings.xml
 @@ -1,5 +1,7 @@
  <?xml version="1.0" encoding="utf-8"?>
  <resources>
 +    <string name="hide_self_from_settings">Hide Amarok from Settings (experimental)</string>
-+    <string name="hide_self_from_settings_description">Filter this Amarok installation from app lists requested by Android Settings while XHide is enabled. Does not disable Amarok. Test your recovery tile first. Other system screens may still show the app.</string>
++    <string name="hide_self_from_settings_description">Filter this Amarok installation from app lists requested by Android Settings while the LSPosed module is active, even with Enable XHide off. Does not disable Amarok. Test your recovery tile first. Other system screens may still show the app.</string>
      <string name="open_amarok">Open Amarok</string>
      <string name="add_open_amarok_tile">Add recovery tile</string>
      <string name="open_amarok_tile_instructions">Before hiding the icon, add Open Amarok to Quick Settings and test opening the app with it. To add it manually, edit your Quick Settings tiles. Dial codes may not work on every phone. This tile remains visible in Quick Settings.</string>
