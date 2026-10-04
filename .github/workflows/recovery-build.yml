@@ -17,25 +17,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-         - uses: android-actions/setup-android@v4
-     with:
-       packages: platform-tools
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
-      - name: Apply recovery patch
-        run: |
-          git apply --check amarok-android15-recovery.patch
-          git apply amarok-android15-recovery.patch
-
-      - name: Build APK
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleFossDebug --no-daemon
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Amarok-Recovery-APK
-          path: app/build/outputs/apk/foss/debug/*.apk
-          if-no-files-found: error
+        run: sdkmanager "platforms;android-36" "
