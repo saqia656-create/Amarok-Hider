@@ -1,0 +1,200 @@
+diff --git a/.cursor/rules/overview.mdc b/.cursor/rules/overview.mdc
+index 25352ae..7577f7a 100644
+--- a/.cursor/rules/overview.mdc
++++ b/.cursor/rules/overview.mdc
+@@ -97,6 +97,8 @@ When a hide/unhide operation is triggered, the main app will call `XHidePrefBrid
+ Provides multiple triggers for instant hide/unhide operations:
+ 
+ - **Quick Settings Tile:** `QSTileService.java`
++- **Recovery Launch Tile:** `OpenAmarokTileService.java` opens the normal locked app independently of launcher icons and dialer broadcasts; add it from Privacy settings.
++- **Secret Dial Code:** `receivers/DialerReceiver.java` accepts legacy and modern secret-code broadcasts for `262765`.
+ - **Quick Hide Service:** `QuickHideService.java` (includes notification and panic button functionality)
+ - **Auto Hide on Screen Off:** Implemented via `ScreenStatusReceiver.java` and `AutoHideUtil.java`
+ - **Intent API:** Managed by `ActionReceiver.java`
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 1cadd47..223dda0 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -123,6 +123,16 @@
+                 android:name="android.service.quicksettings.ACTIVE_TILE"
+                 android:value="true" />
+         </service>
++        <service
++            android:name=".OpenAmarokTileService"
++            android:exported="true"
++            android:icon="@drawable/ic_paw"
++            android:label="@string/open_amarok"
++            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
++            <intent-filter>
++                <action android:name="android.service.quicksettings.action.QS_TILE" />
++            </intent-filter>
++        </service>
+         <service
+             android:name=".QuickHideService"
+             android:exported="false"
+@@ -180,6 +190,7 @@
+             android:exported="true">
+             <intent-filter>
+                 <action android:name="android.provider.Telephony.SECRET_CODE" />
++                <action android:name="android.telephony.action.SECRET_CODE" />
+                 <!-- 262765 is AMAROK in T9 -->
+                 <data
+                     android:host="262765"
+@@ -210,4 +221,4 @@
+ 
+     </application>
+ 
+-</manifest>
+\ No newline at end of file
++</manifest>
+diff --git a/app/src/main/java/deltazero/amarok/OpenAmarokTileService.java b/app/src/main/java/deltazero/amarok/OpenAmarokTileService.java
+new file mode 100644
+index 0000000..48710a8
+--- /dev/null
++++ b/app/src/main/java/deltazero/amarok/OpenAmarokTileService.java
+@@ -0,0 +1,38 @@
++package deltazero.amarok;
++
++import android.annotation.SuppressLint;
++import android.app.PendingIntent;
++import android.content.Intent;
++import android.os.Build;
++import android.service.quicksettings.Tile;
++import android.service.quicksettings.TileService;
++
++import deltazero.amarok.ui.MainActivity;
++
++/** User-initiated recovery entry point independent of dialer broadcasts and launcher aliases. */
++public class OpenAmarokTileService extends TileService {
++    @Override
++    public void onStartListening() {
++        Tile tile = getQsTile();
++        if (tile == null) return;
++        tile.setLabel(getString(R.string.open_amarok));
++        tile.setState(Tile.STATE_INACTIVE);
++        tile.updateTile();
++    }
++
++    @Override
++    @SuppressLint("StartActivityAndCollapseDeprecated")
++    public void onClick() {
++        unlockAndRun(() -> {
++            // MainActivity retains the normal app-lock/disguise flow.
++            Intent intent = new Intent(this, MainActivity.class)
++                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
++                startActivityAndCollapse(PendingIntent.getActivity(this, 262765, intent,
++                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
++            } else {
++                startActivityAndCollapse(intent);
++            }
++        });
++    }
++}
+diff --git a/app/src/main/java/deltazero/amarok/receivers/DialerReceiver.java b/app/src/main/java/deltazero/amarok/receivers/DialerReceiver.java
+index e21e903..67fba3b 100644
+--- a/app/src/main/java/deltazero/amarok/receivers/DialerReceiver.java
++++ b/app/src/main/java/deltazero/amarok/receivers/DialerReceiver.java
+@@ -3,14 +3,24 @@ package deltazero.amarok.receivers;
+ import android.content.BroadcastReceiver;
+ import android.content.Context;
+ import android.content.Intent;
++import android.util.Log;
+ 
+ import deltazero.amarok.ui.MainActivity;
+ 
+ public class DialerReceiver extends BroadcastReceiver {
+     @Override
+     public void onReceive(Context context, Intent intent) {
++        if (intent == null || !("android.provider.Telephony.SECRET_CODE".equals(intent.getAction())
++                || "android.telephony.action.SECRET_CODE".equals(intent.getAction()))) return;
++        var data = intent.getData();
++        if (data == null || !"android_secret_code".equals(data.getScheme())
++                || !"262765".equals(data.getHost())) return;
+         Intent launchIntent = new Intent(context, MainActivity.class);
+         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+-        context.startActivity(launchIntent);
++        try {
++            context.startActivity(launchIntent);
++        } catch (android.content.ActivityNotFoundException | SecurityException e) {
++            Log.w("DialerReceiver", "Unable to open Amarok; use the Open Amarok tile", e);
++        }
+     }
+-} 
+\ No newline at end of file
++}
+diff --git a/app/src/main/java/deltazero/amarok/ui/settings/PrivacyCategory.java b/app/src/main/java/deltazero/amarok/ui/settings/PrivacyCategory.java
+index 4c2c5e7..5d41d77 100644
+--- a/app/src/main/java/deltazero/amarok/ui/settings/PrivacyCategory.java
++++ b/app/src/main/java/deltazero/amarok/ui/settings/PrivacyCategory.java
+@@ -2,12 +2,18 @@ package deltazero.amarok.ui.settings;
+ 
+ 
+ import android.widget.Toast;
++import android.app.StatusBarManager;
++import android.content.ComponentName;
++import android.graphics.drawable.Icon;
++import android.os.Build;
+ 
+ import androidx.annotation.NonNull;
+ import androidx.fragment.app.FragmentActivity;
+ import androidx.preference.PreferenceScreen;
++import androidx.preference.Preference;
+ 
+ import deltazero.amarok.PrefMgr;
++import deltazero.amarok.OpenAmarokTileService;
+ import deltazero.amarok.R;
+ import deltazero.amarok.ui.CountdownConfirmDialog;
+ import deltazero.amarok.ui.SetPasswordFragment;
+@@ -73,6 +79,28 @@ public class PrivacyCategory extends BaseCategory {
+         });
+         addPreference(disguisePref);
+ 
++        var recoveryTilePref = new Preference(activity);
++        recoveryTilePref.setTitle(R.string.add_open_amarok_tile);
++        recoveryTilePref.setSummary(R.string.open_amarok_tile_instructions);
++        recoveryTilePref.setIcon(R.drawable.ic_paw);
++        recoveryTilePref.setOnPreferenceClickListener(preference -> {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
++                StatusBarManager manager = activity.getSystemService(StatusBarManager.class);
++                if (manager != null) {
++                    manager.requestAddTileService(new ComponentName(activity, OpenAmarokTileService.class),
++                            activity.getString(R.string.open_amarok),
++                            Icon.createWithResource(activity, R.drawable.ic_paw),
++                            activity.getMainExecutor(), result ->
++                                    Toast.makeText(activity, R.string.open_amarok_tile_instructions,
++                                            Toast.LENGTH_LONG).show());
++                }
++            } else {
++                Toast.makeText(activity, R.string.open_amarok_tile_instructions, Toast.LENGTH_LONG).show();
++            }
++            return true;
++        });
++        addPreference(recoveryTilePref);
++
+         var hideAmarokIconPref = new MaterialSwitchPreference(activity);
+         hideAmarokIconPref.setKey(PrefMgr.HIDE_AMAROK_ICON);
+         hideAmarokIconPref.setIcon(R.drawable.hide_source_black_24dp);
+@@ -85,7 +113,8 @@ public class PrivacyCategory extends BaseCategory {
+                 // Show countdown dialog before hiding icon
+                 new CountdownConfirmDialog.Builder(activity)
+                         .setTitle(R.string.hide_amarok_icon_dialog_title)
+-                        .setMessage(R.string.hide_amarok_icon_dialog_message)
++                        .setMessage(activity.getString(R.string.hide_amarok_icon_dialog_message)
++                                + "\n\n" + activity.getString(R.string.open_amarok_tile_instructions))
+                         .setCountdownSeconds(10)
+                         .setOnConfirmAction(() -> {
+                             // When hiding icon, disable disguise and turn it off
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 3a74f53..c98bff1 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,5 +1,8 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
++    <string name="open_amarok">Open Amarok</string>
++    <string name="add_open_amarok_tile">Add recovery tile</string>
++    <string name="open_amarok_tile_instructions">Before hiding the icon, add Open Amarok to Quick Settings and test opening the app with it. To add it manually, edit your Quick Settings tiles. Dial codes may not work on every phone. This tile remains visible in Quick Settings.</string>
+     <string name="app_name" translatable="false">Amarok</string>
+     <string name="unhide">Unhide</string>
+     <string name="hide">Hide</string>
