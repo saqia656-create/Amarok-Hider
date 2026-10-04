@@ -23,11 +23,13 @@ jobs:
 
       - name: Install Android SDK
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
-
+   
       - name: Apply recovery patch
-        run: |
+       run: |
           git apply --check amarok-android15-recovery.patch
           git apply amarok-android15-recovery.patch
+          git apply --check amarok-selfhide-settings.patch
+          git apply amarok-selfhide-settings.patch
 
       - name: Build APK
         run: |
